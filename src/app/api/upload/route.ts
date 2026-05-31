@@ -1,6 +1,10 @@
 import { NextResponse } from 'next/server';
-import { writeFile, mkdir } from 'fs/promises';
-import { join } from 'path';
+import { createClient } from '@supabase/supabase-js';
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+);
 
 export async function POST(request: Request) {
   try {
@@ -11,31 +15,25 @@ export async function POST(request: Request) {
       return NextResponse.json({ success: false, error: 'لم يتم العثور على ملف' }, { status: 400 });
     }
 
-    const bytes = await file.arrayBuffer();
-    const buffer = Buffer.from(bytes);
-
-    // Generate safe filename to avoid conflicts and url encoding issues
     const originalName = file.name || 'image.png';
     const safeName = originalName.replace(/[^a-zA-Z0-9.\-_]/g, '_');
     const filename = `${Date.now()}_${safeName}`;
 
-    // Path to public/uploads
-    const uploadDir = join(process.cwd(), 'public', 'uploads');
-    
-    // Ensure the uploads directory exists
-    try {
-      await mkdir(uploadDir, { recursive: true });
-    } catch(e) {
-      // Ignore if dir already exists
+    const bytes = await file.arrayBuffer();
+    const buffer = Buffer.from(bytes);
+
+    const { error } = await supabase.storage
+      .from('images')
+      .upload(filename, buffer, { contentType: file.type, upsert: false });
+
+    if (error) {
+      console.error("Supabase upload error:", error);
+      return NextResponse.json({ success: false, error: error.message }, { status: 500 });
     }
 
-    const path = join(uploadDir, filename);
+    const { data: urlData } = supabase.storage.from('images').getPublicUrl(filename);
 
-    // Write the buffer to the file system
-    await writeFile(path, buffer);
-    const fileUrl = `/uploads/${filename}`;
-
-    return NextResponse.json({ success: true, url: fileUrl });
+    return NextResponse.json({ success: true, url: urlData.publicUrl });
   } catch (error) {
     console.error("Upload error:", error);
     return NextResponse.json({ success: false, error: 'حدث خطأ أثناء رفع الملف' }, { status: 500 });
