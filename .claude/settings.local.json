@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx create-next-app@latest . --typescript --tailwind --eslint --app --src-dir --import-alias \"@/*\" --no-git --yes)",
+      "Bash(npm --version)",
+      "Bash(npm install:*)",
+      "Bash(rm \"c:/Users/sulta/Downloads/موقع الهمني/next.config.ts\")",
+      "Bash(npm run:*)",
+      "Bash(del \"c:\\\\Users\\\\sulta\\\\Downloads\\\\موقع الهمني\\\\next.config.ts\")",
+      "Bash(powershell.exe -Command \"Remove-Item 'C:\\\\Users\\\\sulta\\\\Downloads\\\\موقع الهمني\\\\next.config.ts' -Force\")",
+      "Skill(update-config)",
+      "Skill(update-config:*)",
+      "Bash(npx tsc:*)"
+    ]
+  }
+}
