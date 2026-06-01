@@ -1,9 +1,10 @@
 "use client";
-import { createContext, useContext, useState, useCallback, ReactNode, useEffect } from "react";
+import { createContext, useContext, useState, useCallback, ReactNode, useEffect, useRef } from "react";
 import { newsArticles as defaultNews, NewsArticle } from "./data/news";
 import { projects as defaultProjects, Project } from "./data/projects";
 import { auditLog } from "./audit-log";
 import { useAuth } from "./auth-context";
+import { supabase } from "./supabase";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -134,8 +135,6 @@ const DEFAULT_BOT_RULES: BotRule[] = [
   { id: "br12", keyword: "شكوى", response: "يهمنا جداً سماعك وسد أي خلل! يمكنك رفع الشكاوى أو المقترحات عبر تعبئة النموذج في صفحة طلبات الدعم أو التواصل معنا مباشرة." }
 ];
 
-// ── Storage helpers ────────────────────────────────────────────────────────────
-
 const DEFAULT_BOT_SETTINGS: BotSettings = {
   apiKey: "",
   model: "gemini-1.5-flash-latest",
@@ -144,69 +143,58 @@ const DEFAULT_BOT_SETTINGS: BotSettings = {
   welcomeMessage: "وعليكم السلام ورحمة الله! أنا مُلهم، مساعدك الذكي في مبادرة ألهمني. كيف أقدر أفيدك اليوم؟ 😊",
 };
 
-const STORAGE_KEYS = {
-  settings:      "alhamni_cms_settings",
-  news:          "alhamni_cms_news",
-  projects:      "alhamni_cms_projects",
-  announcements: "alhamni_cms_announcements",
-  board:         "alhamni_cms_board",
-  botRules:      "alhamni_cms_bot_rules",
-  botSettings:   "alhamni_cms_bot_settings",
-};
+// ── Supabase helpers ───────────────────────────────────────────────────────────
 
-function loadFromStorage<T>(key: string, fallback: T): T {
-  if (typeof window === "undefined") return fallback;
+async function loadFromDB<T>(key: string, fallback: T): Promise<T> {
   try {
-    const raw = localStorage.getItem(key);
-    return raw ? (JSON.parse(raw) as T) : fallback;
-  } catch { return fallback; }
+    const { data, error } = await supabase
+      .from('cms_data')
+      .select('value')
+      .eq('key', key)
+      .single();
+    if (error || !data) return fallback;
+    return data.value as T;
+  } catch {
+    return fallback;
+  }
 }
 
-function saveToStorage<T>(key: string, value: T) {
-  if (typeof window === "undefined") return;
-  try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* full */ }
+async function saveToDB<T>(key: string, value: T) {
+  try {
+    await supabase
+      .from('cms_data')
+      .upsert({ key, value, updated_at: new Date().toISOString() }, { onConflict: 'key' });
+  } catch { /* ignore */ }
 }
 
 // ── Context type ───────────────────────────────────────────────────────────────
 
 interface CmsContextType {
-  // Site settings
   settings: SiteSettings;
   updateSettings: (data: Partial<SiteSettings>) => void;
-
-  // News
   news: NewsArticle[];
   addNews: (article: Omit<NewsArticle, "id">) => void;
   updateNews: (id: string, data: Partial<NewsArticle>) => void;
   deleteNews: (id: string) => void;
-
-  // Projects
   projects: Project[];
   addProject: (project: Omit<Project, "id">) => void;
   updateProject: (id: string, data: Partial<Project>) => void;
   deleteProject: (id: string) => void;
-
-  // Announcements
   announcements: Announcement[];
   addAnnouncement: (a: Omit<Announcement, "id">) => void;
   updateAnnouncement: (id: string, data: Partial<Announcement>) => void;
   deleteAnnouncement: (id: string) => void;
-
-  // Board
   board: BoardMember[];
   addBoardMember: (m: Omit<BoardMember, "id">) => void;
   updateBoardMember: (id: string, data: Partial<BoardMember>) => void;
   deleteBoardMember: (id: string) => void;
-
-  // Bot Rules
   botRules: BotRule[];
   addBotRule: (r: Omit<BotRule, "id">) => void;
   updateBotRule: (id: string, data: Partial<BotRule>) => void;
   deleteBotRule: (id: string) => void;
-
-  // Bot Settings
   botSettings: BotSettings;
   updateBotSettings: (data: Partial<BotSettings>) => void;
+  loaded: boolean;
 }
 
 const CmsContext = createContext<CmsContextType>({} as CmsContextType);
@@ -214,45 +202,45 @@ const CmsContext = createContext<CmsContextType>({} as CmsContextType);
 export function CmsProvider({ children }: { children: ReactNode }) {
   const { profile } = useAuth();
 
-  const [settings, setSettings] = useState<SiteSettings>(() => {
-    const saved = loadFromStorage(STORAGE_KEYS.settings, DEFAULT_SETTINGS);
-    // Auto-upgrade colors if they are still using the old default ones
-    if (saved.primaryColor === "#1E4490") saved.primaryColor = "#3B5BA0";
-    if (saved.goldColor === "#CDA620") saved.goldColor = "#BDD8EF";
-    if (saved.navyColor === "#0F2148") saved.navyColor = "#1A2E5B";
-    return { ...DEFAULT_SETTINGS, ...saved };
-  });
-  const [news, setNews] = useState<NewsArticle[]>(() =>
-    loadFromStorage(STORAGE_KEYS.news, defaultNews)
-  );
-  const [projects, setProjects] = useState<Project[]>(() =>
-    loadFromStorage(STORAGE_KEYS.projects, defaultProjects)
-  );
-  const [announcements, setAnnouncements] = useState<Announcement[]>(() =>
-    loadFromStorage(STORAGE_KEYS.announcements, DEFAULT_ANNOUNCEMENTS)
-  );
-  const [board, setBoard] = useState<BoardMember[]>(() => {
-    const saved = loadFromStorage(STORAGE_KEYS.board, DEFAULT_BOARD);
-    if (saved.length > 0 && !("department" in saved[0])) {
-      return DEFAULT_BOARD; // Upgrade to new format
-    }
-    return saved;
-  });
-  const [botRules, setBotRules] = useState<BotRule[]>(() =>
-    loadFromStorage(STORAGE_KEYS.botRules, DEFAULT_BOT_RULES)
-  );
-  const [botSettings, setBotSettings] = useState<BotSettings>(() =>
-    loadFromStorage(STORAGE_KEYS.botSettings, DEFAULT_BOT_SETTINGS)
-  );
+  const [loaded, setLoaded] = useState(false);
+  const [settings, setSettings] = useState<SiteSettings>(DEFAULT_SETTINGS);
+  const [news, setNews] = useState<NewsArticle[]>(defaultNews);
+  const [projects, setProjects] = useState<Project[]>(defaultProjects);
+  const [announcements, setAnnouncements] = useState<Announcement[]>(DEFAULT_ANNOUNCEMENTS);
+  const [board, setBoard] = useState<BoardMember[]>(DEFAULT_BOARD);
+  const [botRules, setBotRules] = useState<BotRule[]>(DEFAULT_BOT_RULES);
+  const [botSettings, setBotSettings] = useState<BotSettings>(DEFAULT_BOT_SETTINGS);
 
-  // Persist on change
-  useEffect(() => { saveToStorage(STORAGE_KEYS.settings, settings); }, [settings]);
-  useEffect(() => { saveToStorage(STORAGE_KEYS.news, news); }, [news]);
-  useEffect(() => { saveToStorage(STORAGE_KEYS.projects, projects); }, [projects]);
-  useEffect(() => { saveToStorage(STORAGE_KEYS.announcements, announcements); }, [announcements]);
-  useEffect(() => { saveToStorage(STORAGE_KEYS.board, board); }, [board]);
-  useEffect(() => { saveToStorage(STORAGE_KEYS.botRules, botRules); }, [botRules]);
-  useEffect(() => { saveToStorage(STORAGE_KEYS.botSettings, botSettings); }, [botSettings]);
+  // Load all data from Supabase on mount
+  useEffect(() => {
+    async function loadAll() {
+      const [s, n, p, a, b, br, bs] = await Promise.all([
+        loadFromDB('settings', DEFAULT_SETTINGS),
+        loadFromDB('news', defaultNews),
+        loadFromDB('projects', defaultProjects),
+        loadFromDB('announcements', DEFAULT_ANNOUNCEMENTS),
+        loadFromDB('board', DEFAULT_BOARD),
+        loadFromDB('botRules', DEFAULT_BOT_RULES),
+        loadFromDB('botSettings', DEFAULT_BOT_SETTINGS),
+      ]);
+      setSettings({ ...DEFAULT_SETTINGS, ...s });
+      setNews(n);
+      setProjects(p);
+      setAnnouncements(a);
+      setBoard(b);
+      setBotRules(br);
+      setBotSettings(bs);
+      setLoaded(true);
+    }
+    loadAll();
+  }, []);
+
+  // Debounce timers
+  const timers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  function debounceSave<T>(key: string, value: T) {
+    clearTimeout(timers.current[key]);
+    timers.current[key] = setTimeout(() => saveToDB(key, value), 600);
+  }
 
   const logAction = useCallback((action: "content_published" | "content_updated", targetName: string) => {
     if (!profile) return;
@@ -264,92 +252,96 @@ export function CmsProvider({ children }: { children: ReactNode }) {
 
   // ── Settings ────────────────────────────────────────────────────────────────
   const updateSettings = useCallback((data: Partial<SiteSettings>) => {
-    setSettings(prev => ({ ...prev, ...data }));
+    setSettings(prev => {
+      const next = { ...prev, ...data };
+      debounceSave('settings', next);
+      return next;
+    });
     logAction("content_updated", "إعدادات الموقع");
   }, [logAction]);
 
   // ── News ────────────────────────────────────────────────────────────────────
   const addNews = useCallback((article: Omit<NewsArticle, "id">) => {
     const newItem: NewsArticle = { ...article, id: `news-${Date.now()}` };
-    setNews(prev => [newItem, ...prev]);
+    setNews(prev => { const next = [newItem, ...prev]; debounceSave('news', next); return next; });
     logAction("content_published", newItem.title);
   }, [logAction]);
 
   const updateNews = useCallback((id: string, data: Partial<NewsArticle>) => {
-    setNews(prev => prev.map(n => n.id === id ? { ...n, ...data } : n));
+    setNews(prev => { const next = prev.map(n => n.id === id ? { ...n, ...data } : n); debounceSave('news', next); return next; });
     logAction("content_updated", data.title || id);
   }, [logAction]);
 
   const deleteNews = useCallback((id: string) => {
-    setNews(prev => prev.filter(n => n.id !== id));
+    setNews(prev => { const next = prev.filter(n => n.id !== id); debounceSave('news', next); return next; });
   }, []);
 
   // ── Projects ────────────────────────────────────────────────────────────────
   const addProject = useCallback((project: Omit<Project, "id">) => {
     const newItem: Project = { ...project, id: `proj-${Date.now()}` };
-    setProjects(prev => [newItem, ...prev]);
+    setProjects(prev => { const next = [newItem, ...prev]; debounceSave('projects', next); return next; });
     logAction("content_published", newItem.title);
   }, [logAction]);
 
   const updateProject = useCallback((id: string, data: Partial<Project>) => {
-    setProjects(prev => prev.map(p => p.id === id ? { ...p, ...data } : p));
+    setProjects(prev => { const next = prev.map(p => p.id === id ? { ...p, ...data } : p); debounceSave('projects', next); return next; });
     logAction("content_updated", data.title || id);
   }, [logAction]);
 
   const deleteProject = useCallback((id: string) => {
-    setProjects(prev => prev.filter(p => p.id !== id));
+    setProjects(prev => { const next = prev.filter(p => p.id !== id); debounceSave('projects', next); return next; });
   }, []);
 
   // ── Announcements ───────────────────────────────────────────────────────────
   const addAnnouncement = useCallback((a: Omit<Announcement, "id">) => {
     const newItem: Announcement = { ...a, id: `ann-${Date.now()}` };
-    setAnnouncements(prev => [newItem, ...prev]);
+    setAnnouncements(prev => { const next = [newItem, ...prev]; debounceSave('announcements', next); return next; });
     logAction("content_published", newItem.title);
   }, [logAction]);
 
   const updateAnnouncement = useCallback((id: string, data: Partial<Announcement>) => {
-    setAnnouncements(prev => prev.map(a => a.id === id ? { ...a, ...data } : a));
+    setAnnouncements(prev => { const next = prev.map(a => a.id === id ? { ...a, ...data } : a); debounceSave('announcements', next); return next; });
     logAction("content_updated", data.title || id);
   }, [logAction]);
 
   const deleteAnnouncement = useCallback((id: string) => {
-    setAnnouncements(prev => prev.filter(a => a.id !== id));
+    setAnnouncements(prev => { const next = prev.filter(a => a.id !== id); debounceSave('announcements', next); return next; });
   }, []);
 
   // ── Board ────────────────────────────────────────────────────────────────────
   const addBoardMember = useCallback((m: Omit<BoardMember, "id">) => {
     const newItem: BoardMember = { ...m, id: `board-${Date.now()}` };
-    setBoard(prev => [...prev, newItem]);
+    setBoard(prev => { const next = [...prev, newItem]; debounceSave('board', next); return next; });
     logAction("content_published", newItem.name);
   }, [logAction]);
 
   const updateBoardMember = useCallback((id: string, data: Partial<BoardMember>) => {
-    setBoard(prev => prev.map(m => m.id === id ? { ...m, ...data } : m));
+    setBoard(prev => { const next = prev.map(m => m.id === id ? { ...m, ...data } : m); debounceSave('board', next); return next; });
     logAction("content_updated", data.name || id);
   }, [logAction]);
 
   const deleteBoardMember = useCallback((id: string) => {
-    setBoard(prev => prev.filter(m => m.id !== id));
+    setBoard(prev => { const next = prev.filter(m => m.id !== id); debounceSave('board', next); return next; });
   }, []);
 
   // ── Bot Rules ────────────────────────────────────────────────────────────────
   const addBotRule = useCallback((r: Omit<BotRule, "id">) => {
     const newItem: BotRule = { ...r, id: `br-${Date.now()}` };
-    setBotRules(prev => [...prev, newItem]);
+    setBotRules(prev => { const next = [...prev, newItem]; debounceSave('botRules', next); return next; });
     logAction("content_published", r.keyword);
   }, [logAction]);
 
   const updateBotRule = useCallback((id: string, data: Partial<BotRule>) => {
-    setBotRules(prev => prev.map(r => r.id === id ? { ...r, ...data } : r));
+    setBotRules(prev => { const next = prev.map(r => r.id === id ? { ...r, ...data } : r); debounceSave('botRules', next); return next; });
     logAction("content_updated", data.keyword || id);
   }, [logAction]);
 
   const deleteBotRule = useCallback((id: string) => {
-    setBotRules(prev => prev.filter(r => r.id !== id));
+    setBotRules(prev => { const next = prev.filter(r => r.id !== id); debounceSave('botRules', next); return next; });
   }, []);
 
   const updateBotSettings = useCallback((data: Partial<BotSettings>) => {
-    setBotSettings(prev => ({ ...prev, ...data }));
+    setBotSettings(prev => { const next = { ...prev, ...data }; debounceSave('botSettings', next); return next; });
   }, []);
 
   return (
@@ -361,6 +353,7 @@ export function CmsProvider({ children }: { children: ReactNode }) {
       board, addBoardMember, updateBoardMember, deleteBoardMember,
       botRules, addBotRule, updateBotRule, deleteBotRule,
       botSettings, updateBotSettings,
+      loaded,
     }}>
       {children}
     </CmsContext.Provider>
